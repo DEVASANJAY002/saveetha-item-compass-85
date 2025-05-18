@@ -105,8 +105,25 @@ export function NewItemForm() {
       // Create the bucket if it doesn't exist yet
       if (error && error.message.includes('The resource was not found')) {
         try {
-          // Using custom RPC or direct SQL to create bucket since the RPC name in the original was incorrect
-          await supabase.rpc('create_bucket', { name: 'items', public: true });
+          // Create bucket using direct SQL insert instead of RPC
+          // We'll use a direct fetch to the Supabase API since the RPC is causing issues
+          const resp = await fetch(`${supabase.supabaseUrl}/storage/buckets`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': supabase.supabaseKey,
+              'Authorization': `Bearer ${supabase.supabaseKey}`
+            },
+            body: JSON.stringify({
+              id: 'items',
+              name: 'items',
+              public: true
+            })
+          });
+          
+          if (!resp.ok) {
+            console.error('Failed to create bucket:', await resp.json());
+          }
           
           // Try the upload again
           const retryResult = await supabase.storage

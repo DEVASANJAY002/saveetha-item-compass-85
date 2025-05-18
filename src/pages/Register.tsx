@@ -1,5 +1,5 @@
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useAuth } from "@/context/auth-context";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,8 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { toast } from "sonner";
+import { Loader2 } from "lucide-react";
+import { Separator } from "@/components/ui/separator";
 
 const Register = () => {
   const [name, setName] = useState("");
@@ -16,8 +18,15 @@ const Register = () => {
   const [confirmPassword, setConfirmPassword] = useState("");
   const [adminCode, setAdminCode] = useState("");
   const [isAdmin, setIsAdmin] = useState(false);
-  const { register, loading } = useAuth();
+  const { register, loginWithGoogle, loading, isAuthenticated } = useAuth();
   const navigate = useNavigate();
+  
+  // Redirect if already logged in
+  useEffect(() => {
+    if (isAuthenticated) {
+      navigate("/");
+    }
+  }, [isAuthenticated, navigate]);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -27,19 +36,33 @@ const Register = () => {
       return;
     }
     
+    if (password.length < 6) {
+      toast.error("Password must be at least 6 characters");
+      return;
+    }
+    
     try {
       await register(name, email, password, isAdmin ? adminCode : undefined);
-      navigate("/");
+      // Navigation happens in useEffect when isAuthenticated changes
     } catch (error) {
       console.error("Registration error:", error);
     }
   };
 
+  const handleGoogleLogin = async () => {
+    try {
+      await loginWithGoogle();
+      // Redirect happens in OAuth flow
+    } catch (error) {
+      console.error("Google login error:", error);
+    }
+  };
+
   return (
     <div className="w-full max-w-md">
-      <Card>
-        <CardHeader>
-          <CardTitle className="text-2xl">Register</CardTitle>
+      <Card className="shadow-lg">
+        <CardHeader className="space-y-1">
+          <CardTitle className="text-2xl font-bold">Register</CardTitle>
           <CardDescription>
             Create an account to report lost or found items
           </CardDescription>
@@ -55,6 +78,7 @@ const Register = () => {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 required
+                className="focus:ring-2 focus:ring-primary"
               />
             </div>
             <div className="space-y-2">
@@ -66,6 +90,7 @@ const Register = () => {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                className="focus:ring-2 focus:ring-primary"
               />
             </div>
             <div className="space-y-2">
@@ -77,7 +102,11 @@ const Register = () => {
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
                 required
+                className="focus:ring-2 focus:ring-primary"
               />
+              <p className="text-xs text-muted-foreground">
+                Password must be at least 6 characters long
+              </p>
             </div>
             <div className="space-y-2">
               <Label htmlFor="confirmPassword">Confirm Password</Label>
@@ -88,6 +117,7 @@ const Register = () => {
                 value={confirmPassword}
                 onChange={(e) => setConfirmPassword(e.target.value)}
                 required
+                className="focus:ring-2 focus:ring-primary"
               />
             </div>
             <div className="flex items-center space-x-2">
@@ -113,6 +143,7 @@ const Register = () => {
                   value={adminCode}
                   onChange={(e) => setAdminCode(e.target.value)}
                   required={isAdmin}
+                  className="focus:ring-2 focus:ring-primary"
                 />
                 <p className="text-xs text-muted-foreground">
                   Admin registration requires a valid security code
@@ -121,12 +152,47 @@ const Register = () => {
             )}
           </CardContent>
           <CardFooter className="flex flex-col space-y-4">
-            <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Registering..." : "Register"}
+            <Button type="submit" className="w-full font-semibold" disabled={loading}>
+              {loading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Registering...
+                </>
+              ) : (
+                "Register"
+              )}
             </Button>
+            
+            <div className="flex items-center w-full">
+              <Separator className="flex-1" />
+              <span className="px-2 text-xs text-muted-foreground">OR</span>
+              <Separator className="flex-1" />
+            </div>
+            
+            <Button 
+              type="button" 
+              variant="outline" 
+              className="w-full" 
+              onClick={handleGoogleLogin}
+              disabled={loading}
+            >
+              {loading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <>
+                  <img 
+                    src="https://www.gstatic.com/firebasejs/ui/2.0.0/images/auth/google.svg" 
+                    alt="Google" 
+                    className="h-4 w-4 mr-2" 
+                  />
+                  Sign up with Google
+                </>
+              )}
+            </Button>
+            
             <div className="text-center text-sm">
               Already have an account?{" "}
-              <Link to="/login" className="text-primary hover:underline">
+              <Link to="/login" className="text-primary hover:underline font-medium">
                 Login
               </Link>
             </div>

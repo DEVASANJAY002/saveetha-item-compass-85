@@ -1,163 +1,348 @@
-
-import { createContext, useContext, useEffect, useState } from "react";
-import { User, UserRole } from "@/types";
+import { createContext, useContext, useState, useEffect } from "react";
+import { Item, ItemPlace, ItemStatus, ItemType } from "@/types";
+import { useAuth } from "./auth-context";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
-interface AuthContextType {
-  user: User | null;
+interface DataContextType {
+  items: Item[];
   loading: boolean;
-  login: (email: string, password: string) => Promise<void>;
-  register: (name: string, email: string, password: string, adminCode?: string) => Promise<void>;
-  logout: () => void;
-  isAuthenticated: boolean;
+  addItem: (item: Omit<Item, "id" | "userId" | "createdAt">) => Promise<void>;
+  updateItemStatus: (id: string, status: ItemStatus) => Promise<void>;
+  deleteItem: (id: string) => Promise<void>;
+  deleteItemsByFilter: (
+    dateRange?: { start: string; end: string },
+    type?: ItemType | "all"
+  ) => Promise<void>;
+  getUserItems: () => Item[];
+  getEmergencyItems: () => Item[];
+  getNormalItems: () => Item[];
+  getItemById: (id: string) => Item | undefined;
 }
 
-const AuthContext = createContext<AuthContextType | undefined>(undefined);
+const DataContext = createContext<DataContextType | undefined>(undefined);
 
-// Mock users for demo
-const MOCK_USERS: User[] = [
+// Initial sample data in case Supabase data isn't loaded
+const INITIAL_ITEMS: Item[] = [
   {
-    id: "1",
-    name: "Admin User",
-    email: "admin@sec.edu",
-    role: "admin",
-    createdAt: new Date().toISOString(),
+    id: "item1",
+    userId: "2",
+    userName: "Test User",
+    userPhone: "9876543210",
+    productName: "Water Bottle",
+    photo: "https://images.unsplash.com/photo-1618160702438-9b02ab6515c9",
+    place: "lost",
+    date: "2023-05-15T10:30:00Z",
+    type: "normal",
+    status: "lost",
+    createdAt: "2023-05-15T10:30:00Z",
   },
   {
-    id: "2",
-    name: "Test User",
-    email: "user@sec.edu",
-    role: "user",
-    createdAt: new Date().toISOString(),
+    id: "item2",
+    userId: "2",
+    userName: "Test User",
+    userPhone: "9876543210",
+    productName: "Laptop",
+    photo: null,
+    place: "lost",
+    date: "2023-05-17T14:20:00Z",
+    type: "emergency",
+    status: "lost",
+    createdAt: "2023-05-17T14:20:00Z",
+  },
+  {
+    id: "item3",
+    userId: "1",
+    userName: "Admin User",
+    userPhone: "9876543211",
+    productName: "Wallet",
+    photo: null,
+    place: "found",
+    date: "2023-05-18T09:15:00Z",
+    type: "normal",
+    status: "found",
+    createdAt: "2023-05-18T09:15:00Z",
   },
 ];
 
-const ADMIN_CODE = "79041167197200060295";
+// Helper function to convert Supabase item to our app's Item type
+const mapSupabaseItem = (item: any): Item => {
+  return {
+    id: item.id,
+    userId: item.user_id,
+    userName: item.name || 'Unknown User',
+    userPhone: item.phone_number || '',
+    productName: item.product_name,
+    photo: item.photo_url,
+    place: item.place as ItemPlace,
+    date: item.date,
+    type: item.type as ItemType,
+    status: item.status as ItemStatus,
+    createdAt: item.created_at,
+  };
+};
 
-export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [user, setUser] = useState<User | null>(null);
+export function DataProvider({ children }: { children: React.ReactNode }) {
+  const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
+  const { user } = useAuth();
 
-  useEffect(() => {
-    // Check if user is stored in localStorage
-    const storedUser = localStorage.getItem("sec_user");
-    if (storedUser) {
-      try {
-        setUser(JSON.parse(storedUser));
-      } catch (error) {
-        console.error("Error parsing stored user", error);
-        localStorage.removeItem("sec_user");
+  // Load items from Supabase
+  const loadItems = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('items')
+        .select('*')
+        .order('created_at', { ascending: false });
+        
+      if (error) {
+        throw error;
       }
+      
+      if (data) {
+        const mappedItems = data.map(mapSupabaseItem);
+        setItems(mappedItems);
+      }
+    } catch (error) {
+      console.error("Error loading items:", error);
+      toast.error("Failed to load items");
+      // Fall back to sample data if Supabase fails
+      setItems(INITIAL_ITEMS);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  // Initial load of items
+  useEffect(() => {
+    loadItems();
   }, []);
 
-  const login = async (email: string, password: string) => {
-    setLoading(true);
-    try {
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      // In a real app, this would be an API call
-      const user = MOCK_USERS.find((u) => u.email === email);
+  // Subscribe to realtime updates for items
+  useEffect(() => {
+    const channel = supabase
+      .channel('items-changes')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'items' 
+      }, () => {
+        loadItems();
+      })
+      .subscribe();
       
-      if (user) {
-        setUser(user);
-        localStorage.setItem("sec_user", JSON.stringify(user));
-        toast.success(`Welcome back, ${user.name}!`);
-      } else {
-        // Register new user
-        const newUser: User = {
-          id: Math.random().toString(36).substring(2, 9),
-          name: email.split("@")[0],
-          email,
-          role: "user",
-          createdAt: new Date().toISOString(),
-        };
-        setUser(newUser);
-        localStorage.setItem("sec_user", JSON.stringify(newUser));
-        toast.success("Account created successfully!");
-      }
-    } catch (error) {
-      console.error(error);
-      toast.error("Failed to log in");
-    } finally {
-      setLoading(false);
-    }
-  };
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
-  const register = async (name: string, email: string, password: string, adminCode?: string) => {
-    setLoading(true);
-    try {
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      // Check if user exists
-      const existingUser = MOCK_USERS.find((u) => u.email === email);
-      if (existingUser) {
-        toast.error("User already exists");
-        return;
-      }
-
-      let role: UserRole = "user";
+  // Auto cleanup items older than 30 days
+  useEffect(() => {
+    const cleanup = async () => {
+      if (!user?.id) return;
       
-      // Check admin code if provided
-      if (adminCode) {
-        if (adminCode === ADMIN_CODE) {
-          role = "admin";
-        } else {
-          toast.error("Invalid admin code");
-          setLoading(false);
-          return;
+      if (user.role === 'admin') {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        try {
+          await supabase
+            .from('items')
+            .delete()
+            .lt('created_at', thirtyDaysAgo.toISOString());
+          
+          // Refresh items after cleanup
+          loadItems();
+        } catch (error) {
+          console.error("Auto cleanup error:", error);
         }
       }
+    };
+    
+    // Run cleanup on mount and set interval
+    if (user?.role === 'admin') {
+      cleanup();
+      const interval = setInterval(cleanup, 24 * 60 * 60 * 1000); // Once per day
+      return () => clearInterval(interval);
+    }
+  }, [user]);
 
-      // Register new user
-      const newUser: User = {
-        id: Math.random().toString(36).substring(2, 9),
-        name,
-        email,
-        role,
-        createdAt: new Date().toISOString(),
+  const addItem = async (newItemData: Omit<Item, "id" | "userId" | "createdAt">) => {
+    if (!user) {
+      toast.error("You must be logged in to add an item");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      // Prepare item data for Supabase
+      const itemData = {
+        user_id: user.id,
+        name: newItemData.userName,
+        phone_number: newItemData.userPhone,
+        product_name: newItemData.productName,
+        photo_url: newItemData.photo,
+        place: newItemData.place as string,
+        date: new Date(newItemData.date).toISOString().split('T')[0], // Format as YYYY-MM-DD
+        type: newItemData.type as string,
+        status: newItemData.status as string,
       };
 
-      setUser(newUser);
-      localStorage.setItem("sec_user", JSON.stringify(newUser));
-      toast.success(`Welcome, ${name}!${role === "admin" ? " Admin access granted." : ""}`);
+      const { data, error } = await supabase
+        .from('items')
+        .insert(itemData)
+        .select()
+        .single();
+        
+      if (error) {
+        throw error;
+      }
+      
+      if (data) {
+        // Add to local state
+        const newItem = mapSupabaseItem(data);
+        setItems((prevItems) => [newItem, ...prevItems]);
+        toast.success("Item added successfully");
+      }
     } catch (error) {
       console.error(error);
-      toast.error("Failed to register");
+      toast.error("Failed to add item");
     } finally {
       setLoading(false);
     }
   };
 
-  const logout = () => {
-    setUser(null);
-    localStorage.removeItem("sec_user");
-    toast.info("Logged out successfully");
+  const updateItemStatus = async (id: string, status: ItemStatus) => {
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('items')
+        .update({ status })
+        .eq('id', id);
+        
+      if (error) {
+        throw error;
+      }
+
+      // Update local state
+      setItems((prevItems) =>
+        prevItems.map((item) =>
+          item.id === id ? { ...item, status } : item
+        )
+      );
+      
+      toast.success(`Item marked as ${status}`);
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to update item status");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteItem = async (id: string) => {
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('items')
+        .delete()
+        .eq('id', id);
+        
+      if (error) {
+        throw error;
+      }
+
+      // Update local state
+      setItems((prevItems) => prevItems.filter((item) => item.id !== id));
+      toast.success("Item deleted successfully");
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to delete item");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const deleteItemsByFilter = async (
+    dateRange?: { start: string; end: string },
+    type?: ItemType | "all"
+  ) => {
+    if (!user || user.role !== 'admin') {
+      toast.error("Only admins can perform batch deletions");
+      return;
+    }
+    
+    setLoading(true);
+    try {
+      let query = supabase.from('items').delete();
+      
+      if (dateRange) {
+        query = query.gte('date', dateRange.start).lte('date', dateRange.end);
+      }
+      
+      if (type && type !== "all") {
+        query = query.eq('type', type);
+      }
+      
+      const { error } = await query;
+      
+      if (error) {
+        throw error;
+      }
+
+      // Refresh items after batch deletion
+      await loadItems();
+      toast.success("Items deleted successfully");
+    } catch (error) {
+      console.error(error);
+      toast.error("Failed to delete items");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getUserItems = () => {
+    if (!user) return [];
+    return items.filter((item) => item.userId === user.id);
+  };
+
+  const getEmergencyItems = () => {
+    return items.filter((item) => item.type === "emergency");
+  };
+
+  const getNormalItems = () => {
+    return items.filter((item) => item.type === "normal");
+  };
+
+  const getItemById = (id: string) => {
+    return items.find((item) => item.id === id);
   };
 
   return (
-    <AuthContext.Provider
+    <DataContext.Provider
       value={{
-        user,
+        items,
         loading,
-        login,
-        register,
-        logout,
-        isAuthenticated: !!user,
+        addItem,
+        updateItemStatus,
+        deleteItem,
+        deleteItemsByFilter,
+        getUserItems,
+        getEmergencyItems,
+        getNormalItems,
+        getItemById,
       }}
     >
       {children}
-    </AuthContext.Provider>
+    </DataContext.Provider>
   );
 }
 
-export function useAuth() {
-  const context = useContext(AuthContext);
+export function useData() {
+  const context = useContext(DataContext);
   if (context === undefined) {
-    throw new Error("useAuth must be used within an AuthProvider");
+    throw new Error("useData must be used within a DataProvider");
   }
   return context;
 }

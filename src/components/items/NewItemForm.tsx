@@ -73,12 +73,16 @@ export function NewItemForm() {
         const { data, error } = await supabase.storage
           .from('items')
           .upload(`${Date.now()}_${file.name}`, file);
-          
+      
         if (error) {
           console.error("Error uploading image:", error);
           toast.error("Failed to upload image. Please try again.");
         } else if (data) {
-          imagePath = data.path;
+          const { data: publicUrlData } = supabase.storage
+            .from('items')
+            .getPublicUrl(data.path);
+      
+          imagePath = publicUrlData?.publicUrl || null;
         }
       }
 
@@ -88,12 +92,12 @@ export function NewItemForm() {
         userPhone: values.contactInfo,
         productName: values.name,
         photo: imagePath,
-        place: values.type,
+        place: values.location, // ✅ CORRECTED
         date: new Date().toISOString(),
         type: values.itemType,
         status: values.type === "lost" ? ItemStatusEnum.LOST : ItemStatusEnum.FOUND,
       });
-      
+            
       toast.success("Item reported successfully!");
       form.reset();
       setFile(null);

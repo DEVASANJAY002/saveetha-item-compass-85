@@ -49,7 +49,10 @@ export function Header() {
               <Button
                 variant="ghost"
                 size="sm"
-                onClick={logout}
+                onClick={() => {
+                  console.log("Logging out user:", user.name);
+                  logout();
+                }}
                 className="flex items-center gap-2"
               >
                 <LogOut className="h-4 w-4" />

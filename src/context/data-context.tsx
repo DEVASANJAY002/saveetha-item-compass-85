@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect } from "react";
 import { Item, ItemPlace, ItemStatus, ItemType } from "@/types";
 import { useAuth } from "./auth-context";
 import { toast } from "sonner";
+import { supabase } from "@/integrations/supabase/client";
 
 interface DataContextType {
   items: Item[];
@@ -21,7 +22,7 @@ interface DataContextType {
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
 
-// Initial sample data
+// Initial sample data in case Supabase data isn't loaded
 const INITIAL_ITEMS: Item[] = [
   {
     id: "item1",
@@ -64,54 +65,108 @@ const INITIAL_ITEMS: Item[] = [
   },
 ];
 
+// Helper function to convert Supabase item to our app's Item type
+const mapSupabaseItem = (item: any): Item => {
+  return {
+    id: item.id,
+    userId: item.user_id,
+    userName: item.name || 'Unknown User',
+    userPhone: item.phone_number || '',
+    productName: item.product_name,
+    photo: item.photo_url,
+    place: item.place as ItemPlace,
+    date: item.date,
+    type: item.type as ItemType,
+    status: item.status as ItemStatus,
+    createdAt: item.created_at,
+  };
+};
+
 export function DataProvider({ children }: { children: React.ReactNode }) {
   const [items, setItems] = useState<Item[]>([]);
   const [loading, setLoading] = useState(true);
   const { user } = useAuth();
 
-  useEffect(() => {
-    // Load items from local storage or use initial data
-    const storedItems = localStorage.getItem("sec_items");
-    if (storedItems) {
-      try {
-        setItems(JSON.parse(storedItems));
-      } catch (error) {
-        console.error("Error parsing stored items", error);
-        setItems(INITIAL_ITEMS);
+  // Load items from Supabase
+  const loadItems = async () => {
+    setLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('items')
+        .select('*')
+        .order('created_at', { ascending: false });
+        
+      if (error) {
+        throw error;
       }
-    } else {
+      
+      if (data) {
+        const mappedItems = data.map(mapSupabaseItem);
+        setItems(mappedItems);
+      }
+    } catch (error) {
+      console.error("Error loading items:", error);
+      toast.error("Failed to load items");
+      // Fall back to sample data if Supabase fails
       setItems(INITIAL_ITEMS);
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
+  };
+
+  // Initial load of items
+  useEffect(() => {
+    loadItems();
   }, []);
 
-  // Save items to local storage whenever they change
+  // Subscribe to realtime updates for items
   useEffect(() => {
-    if (items.length > 0) {
-      localStorage.setItem("sec_items", JSON.stringify(items));
-    }
-  }, [items]);
+    const channel = supabase
+      .channel('items-changes')
+      .on('postgres_changes', { 
+        event: '*', 
+        schema: 'public', 
+        table: 'items' 
+      }, () => {
+        loadItems();
+      })
+      .subscribe();
+      
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, []);
 
   // Auto cleanup items older than 30 days
   useEffect(() => {
-    const cleanup = () => {
-      const thirtyDaysAgo = new Date();
-      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    const cleanup = async () => {
+      if (!user?.id) return;
       
-      setItems(prevItems => 
-        prevItems.filter(item => {
-          const itemDate = new Date(item.createdAt);
-          return itemDate >= thirtyDaysAgo;
-        })
-      );
+      if (user.role === 'admin') {
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        
+        try {
+          await supabase
+            .from('items')
+            .delete()
+            .lt('created_at', thirtyDaysAgo.toISOString());
+          
+          // Refresh items after cleanup
+          loadItems();
+        } catch (error) {
+          console.error("Auto cleanup error:", error);
+        }
+      }
     };
     
     // Run cleanup on mount and set interval
-    cleanup();
-    const interval = setInterval(cleanup, 24 * 60 * 60 * 1000); // Once per day
-    
-    return () => clearInterval(interval);
-  }, []);
+    if (user?.role === 'admin') {
+      cleanup();
+      const interval = setInterval(cleanup, 24 * 60 * 60 * 1000); // Once per day
+      return () => clearInterval(interval);
+    }
+  }, [user]);
 
   const addItem = async (newItemData: Omit<Item, "id" | "userId" | "createdAt">) => {
     if (!user) {
@@ -121,18 +176,35 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
 
     setLoading(true);
     try {
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 500));
-
-      const newItem: Item = {
-        ...newItemData,
-        id: Math.random().toString(36).substring(2, 9),
-        userId: user.id,
-        createdAt: new Date().toISOString(),
+      // Prepare item data for Supabase
+      const itemData = {
+        user_id: user.id,
+        name: newItemData.userName,
+        phone_number: newItemData.userPhone,
+        product_name: newItemData.productName,
+        photo_url: newItemData.photo,
+        place: newItemData.place as string,
+        date: new Date(newItemData.date).toISOString().split('T')[0], // Format as YYYY-MM-DD
+        type: newItemData.type as string,
+        status: newItemData.status as string,
       };
 
-      setItems((prevItems) => [...prevItems, newItem]);
-      toast.success("Item added successfully");
+      const { data, error } = await supabase
+        .from('items')
+        .insert(itemData)
+        .select()
+        .single();
+        
+      if (error) {
+        throw error;
+      }
+      
+      if (data) {
+        // Add to local state
+        const newItem = mapSupabaseItem(data);
+        setItems((prevItems) => [newItem, ...prevItems]);
+        toast.success("Item added successfully");
+      }
     } catch (error) {
       console.error(error);
       toast.error("Failed to add item");
@@ -144,14 +216,22 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const updateItemStatus = async (id: string, status: ItemStatus) => {
     setLoading(true);
     try {
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      const { error } = await supabase
+        .from('items')
+        .update({ status })
+        .eq('id', id);
+        
+      if (error) {
+        throw error;
+      }
 
+      // Update local state
       setItems((prevItems) =>
         prevItems.map((item) =>
           item.id === id ? { ...item, status } : item
         )
       );
+      
       toast.success(`Item marked as ${status}`);
     } catch (error) {
       console.error(error);
@@ -164,9 +244,16 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const deleteItem = async (id: string) => {
     setLoading(true);
     try {
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      const { error } = await supabase
+        .from('items')
+        .delete()
+        .eq('id', id);
+        
+      if (error) {
+        throw error;
+      }
 
+      // Update local state
       setItems((prevItems) => prevItems.filter((item) => item.id !== id));
       toast.success("Item deleted successfully");
     } catch (error) {
@@ -181,32 +268,31 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     dateRange?: { start: string; end: string },
     type?: ItemType | "all"
   ) => {
+    if (!user || user.role !== 'admin') {
+      toast.error("Only admins can perform batch deletions");
+      return;
+    }
+    
     setLoading(true);
     try {
-      // Simulate API delay
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      let query = supabase.from('items').delete();
+      
+      if (dateRange) {
+        query = query.gte('date', dateRange.start).lte('date', dateRange.end);
+      }
+      
+      if (type && type !== "all") {
+        query = query.eq('type', type);
+      }
+      
+      const { error } = await query;
+      
+      if (error) {
+        throw error;
+      }
 
-      setItems((prevItems) =>
-        prevItems.filter((item) => {
-          // Apply date filter if provided
-          if (dateRange) {
-            const itemDate = new Date(item.date);
-            const startDate = new Date(dateRange.start);
-            const endDate = new Date(dateRange.end);
-            if (itemDate < startDate || itemDate > endDate) {
-              return true; // Keep items outside range
-            }
-          }
-
-          // Apply type filter if provided
-          if (type && type !== "all") {
-            return item.type !== type; // Keep items not matching type
-          }
-
-          // If both filters pass, item will be deleted
-          return !(dateRange || (type && type !== "all"));
-        })
-      );
+      // Refresh items after batch deletion
+      await loadItems();
       toast.success("Items deleted successfully");
     } catch (error) {
       console.error(error);

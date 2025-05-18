@@ -1,310 +1,293 @@
 
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { useData } from "@/context/data-context";
+import { useAuth } from "@/context/auth-context";
+import { ItemTypeEnum, ItemStatusEnum } from "@/types";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
-import { ItemPlace, ItemType, ItemStatus } from "@/types";
-import { useData } from "@/context/data-context";
-import { useAuth } from "@/context/auth-context";
-import { toast } from "sonner";
-import { AlertTriangle, Calendar as CalendarIcon, Loader2 } from "lucide-react";
-import { Calendar } from "@/components/ui/calendar";
-import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { format } from "date-fns";
-import { cn } from "@/lib/utils";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Loader2, AlertCircle, Package } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+
+// Enhanced validation schema
+const formSchema = z.object({
+  name: z.string().min(2, {
+    message: "Item name must be at least 2 characters.",
+  }),
+  description: z.string().min(10, {
+    message: "Description must be at least 10 characters.",
+  }),
+  type: z.enum(["lost", "found"]),
+  itemType: z.enum(["normal", "emergency"]),
+  location: z.string().min(5, {
+    message: "Location must be at least 5 characters.",
+  }),
+  contactInfo: z.string()
+    .min(10, { message: "Phone number must be at least 10 digits." })
+    .refine((val) => /^\d+$/.test(val), { message: "Phone number should contain only digits." }),
+  image: z.any().optional(),
+});
 
 export function NewItemForm() {
-  const { user } = useAuth();
+  const [isLoading, setIsLoading] = useState(false);
   const { addItem } = useData();
-  const navigate = useNavigate();
+  const { user } = useAuth();
+  const [file, setFile] = useState<File | null>(null);
   
-  const [productName, setProductName] = useState("");
-  const [userPhone, setUserPhone] = useState("");
-  const [place, setPlace] = useState<ItemPlace>("lost");
-  const [selectedDate, setSelectedDate] = useState<Date | undefined>(new Date());
-  const [type, setType] = useState<ItemType>("normal");
-  const [status, setStatus] = useState<ItemStatus>("lost");
-  const [photo, setPhoto] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [uploading, setUploading] = useState(false);
-  const [imageFile, setImageFile] = useState<File | null>(null);
+  const form = useForm<z.infer<typeof formSchema>>({
+    resolver: zodResolver(formSchema),
+    defaultValues: {
+      name: "",
+      description: "",
+      type: "lost",
+      itemType: "normal",
+      location: "",
+      contactInfo: "",
+    },
+  });
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!user) {
-      toast.error("You must be logged in to report an item");
-      navigate("/login");
-      return;
-    }
-
-    if (!selectedDate) {
-      toast.error("Please select a date");
-      return;
-    }
-
-    setLoading(true);
+  const onSubmit = async (values: z.infer<typeof formSchema>) => {
+    setIsLoading(true);
     try {
-      // Upload image if one is selected but not yet uploaded
-      let finalPhotoUrl = photo;
-      if (imageFile && !photo) {
-        finalPhotoUrl = await uploadImage(imageFile);
+      let imagePath: string | null = null;
+      
+      // Check if storage bucket exists and create it if it doesn't
+      const { data: buckets } = await supabase.storage.listBuckets();
+      const bucketExists = buckets?.some(bucket => bucket.name === 'items');
+      
+      if (!bucketExists) {
+        await supabase.storage.createBucket('items', { public: true });
       }
-
-      await addItem({
-        userName: user.name,
-        userPhone,
-        productName,
-        photo: finalPhotoUrl,
-        place,
-        date: selectedDate.toISOString(),
-        type,
-        status,
-      });
       
-      toast.success("Item reported successfully");
-      navigate("/");
-    } catch (error) {
-      console.error("Error adding item:", error);
-      toast.error("Failed to report item");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handlePhotoChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    
-    // Store the file for later upload during form submission
-    setImageFile(file);
-    
-    // Create a preview
-    const objectUrl = URL.createObjectURL(file);
-    setPhoto(objectUrl);
-  };
-
-  const uploadImage = async (file: File): Promise<string | null> => {
-    if (!user) return null;
-    
-    setUploading(true);
-    try {
-      // Create a unique file path
-      const fileExt = file.name.split('.').pop();
-      const fileName = `${Math.random().toString(36).substring(2)}-${Date.now()}.${fileExt}`;
-      const filePath = `${user.id}/${fileName}`;
-      
-      // Upload to Supabase Storage
-      let { data, error } = await supabase.storage
-        .from('items')
-        .upload(filePath, file);
-        
-      // Create the bucket if it doesn't exist yet
-      if (error && error.message.includes('The resource was not found')) {
-        try {
-          // Create bucket using direct SQL insert instead of RPC
-          // We'll use a direct fetch to the Supabase API since the RPC is causing issues
-          const resp = await fetch(`${supabase.supabaseUrl}/storage/buckets`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'apikey': supabase.supabaseKey,
-              'Authorization': `Bearer ${supabase.supabaseKey}`
-            },
-            body: JSON.stringify({
-              id: 'items',
-              name: 'items',
-              public: true
-            })
-          });
+      // Upload image if provided
+      if (file) {
+        const { data, error } = await supabase.storage
+          .from('items')
+          .upload(`${Date.now()}_${file.name}`, file);
           
-          if (!resp.ok) {
-            console.error('Failed to create bucket:', await resp.json());
-          }
-          
-          // Try the upload again
-          const retryResult = await supabase.storage
-            .from('items')
-            .upload(filePath, file);
-            
-          data = retryResult.data;
-          error = retryResult.error;
-        } catch (bucketError) {
-          console.error('Error creating bucket:', bucketError);
-          throw bucketError;
+        if (error) {
+          console.error("Error uploading image:", error);
+          toast.error("Failed to upload image. Please try again.");
+        } else if (data) {
+          imagePath = data.path;
         }
       }
+
+      // Convert form values to match the Item interface structure
+      await addItem({
+        userName: user?.name || "Anonymous",
+        userPhone: values.contactInfo,
+        productName: values.name,
+        photo: imagePath,
+        place: values.type,
+        date: new Date().toISOString(),
+        type: values.itemType,
+        status: values.type === "lost" ? ItemStatusEnum.LOST : ItemStatusEnum.FOUND,
+      });
       
-      if (error) {
-        throw error;
-      }
-      
-      // Get the public URL
-      const { data: { publicUrl } } = supabase.storage
-        .from('items')
-        .getPublicUrl(filePath);
-        
-      return publicUrl;
+      toast.success("Item reported successfully!");
+      form.reset();
+      setFile(null);
     } catch (error) {
-      console.error('Error uploading image: ', error);
-      toast.error('Error uploading image. Please try again.');
-      return null;
+      console.error("Error reporting item:", error);
+      toast.error("Failed to report item. Please try again.");
     } finally {
-      setUploading(false);
+      setIsLoading(false);
     }
   };
 
   return (
-    <Card className="w-full max-w-3xl mx-auto">
-      <CardHeader>
-        <CardTitle>Report Lost or Found Item</CardTitle>
-        <CardDescription>Provide details about the item you lost or found</CardDescription>
+    <Card className="shadow-lg border-t-4 border-t-primary">
+      <CardHeader className="bg-muted/40">
+        <CardTitle className="flex items-center gap-2">
+          <Package className="h-5 w-5" />
+          Report an Item
+        </CardTitle>
       </CardHeader>
-      <form onSubmit={handleSubmit}>
-        <CardContent className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="productName">Item Name</Label>
-            <Input
-              id="productName"
-              placeholder="e.g., Water Bottle, Wallet, Keys"
-              value={productName}
-              onChange={(e) => setProductName(e.target.value)}
-              required
+      <CardContent className="p-6 pt-6">
+        <Form {...form}>
+          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Item Name Field */}
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Item Name</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Name of the item" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              {/* Location Field */}
+              <FormField
+                control={form.control}
+                name="location"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Location</FormLabel>
+                    <FormControl>
+                      <Input placeholder="Where was it lost/found?" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+
+            {/* Description Field */}
+            <FormField
+              control={form.control}
+              name="description"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Description</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder="Detailed description of the item"
+                      className="resize-none min-h-[100px]"
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormDescription>
+                    Include any unique features or details that might help identify the item.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="userPhone">Phone Number</Label>
-            <Input
-              id="userPhone"
-              type="tel"
-              placeholder="Your contact number"
-              value={userPhone}
-              onChange={(e) => setUserPhone(e.target.value)}
-              required
+            
+            <div className="grid md:grid-cols-2 gap-6">
+              {/* Item Type (Lost/Found) */}
+              <FormField
+                control={form.control}
+                name="type"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Report Type</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger className="w-full">
+                          <SelectValue placeholder="Select report type" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="lost">Lost Item</SelectItem>
+                        <SelectItem value="found">Found Item</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              
+              {/* Contact Phone Number */}
+              <FormField
+                control={form.control}
+                name="contactInfo"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Phone Number</FormLabel>
+                    <FormControl>
+                      <Input
+                        placeholder="Your contact phone number"
+                        type="tel"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </div>
+            
+            {/* Emergency/Normal Radio Selection */}
+            <FormField
+              control={form.control}
+              name="itemType"
+              render={({ field }) => (
+                <FormItem className="border rounded-md p-4 space-y-3">
+                  <FormLabel>Priority Level</FormLabel>
+                  <FormControl>
+                    <RadioGroup
+                      onValueChange={field.onChange}
+                      defaultValue={field.value}
+                      className="flex space-x-4"
+                    >
+                      <FormItem className="flex items-center space-x-2 space-y-0">
+                        <FormControl>
+                          <RadioGroupItem value="normal" />
+                        </FormControl>
+                        <FormLabel className="font-normal">Normal</FormLabel>
+                      </FormItem>
+                      <FormItem className="flex items-center space-x-2 space-y-0">
+                        <FormControl>
+                          <RadioGroupItem value="emergency" />
+                        </FormControl>
+                        <FormLabel className="font-normal text-emergency flex items-center gap-1">
+                          <AlertCircle className="h-4 w-4" />
+                          Emergency
+                        </FormLabel>
+                      </FormItem>
+                    </RadioGroup>
+                  </FormControl>
+                  <FormDescription>
+                    Mark as emergency for high-value or urgently needed items.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="place">Report Type</Label>
-            <RadioGroup
-              value={place}
-              onValueChange={(value) => {
-                setPlace(value as ItemPlace);
-                setStatus(value as ItemStatus); // Set status based on place
-              }}
-              className="flex flex-col gap-2 sm:flex-row"
-            >
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="lost" id="lost" />
-                <Label htmlFor="lost">Lost Item</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="found" id="found" />
-                <Label htmlFor="found">Found Item</Label>
-              </div>
-            </RadioGroup>
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="date">Date</Label>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  id="date"
-                  variant="outline"
-                  className={cn(
-                    "w-full justify-start text-left font-normal",
-                    !selectedDate && "text-muted-foreground"
-                  )}
-                >
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {selectedDate ? format(selectedDate, "PPP") : <span>Pick a date</span>}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="start">
-                <Calendar
-                  mode="single"
-                  selected={selectedDate}
-                  onSelect={setSelectedDate}
-                  initialFocus
-                />
-              </PopoverContent>
-            </Popover>
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="type">Priority Level</Label>
-            <RadioGroup
-              value={type}
-              onValueChange={(value) => setType(value as ItemType)}
-              className="flex flex-col gap-2 sm:flex-row"
-            >
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="normal" id="normal" />
-                <Label htmlFor="normal">Normal</Label>
-              </div>
-              <div className="flex items-center space-x-2">
-                <RadioGroupItem value="emergency" id="emergency" />
-                <Label htmlFor="emergency" className="flex items-center gap-1">
-                  <AlertTriangle className="h-4 w-4 text-destructive" />
-                  Emergency
-                </Label>
-              </div>
-            </RadioGroup>
-            {type === "emergency" && (
-              <p className="text-xs text-muted-foreground">
-                Mark as emergency if the item is valuable or urgently needed.
-              </p>
-            )}
-          </div>
-          
-          <div className="space-y-2">
-            <Label htmlFor="photo">Photo (optional)</Label>
-            <Input
-              id="photo"
-              type="file"
-              accept="image/*"
-              onChange={handlePhotoChange}
-              disabled={uploading}
-            />
-            {uploading && (
-              <div className="flex items-center mt-2 text-sm text-muted-foreground">
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Uploading image...
-              </div>
-            )}
-            {photo && (
-              <div className="mt-2 relative aspect-[4/3] w-full max-w-md rounded-md overflow-hidden">
-                <img
-                  src={photo}
-                  alt="Item preview"
-                  className="object-cover w-full h-full"
-                />
-              </div>
-            )}
-          </div>
-        </CardContent>
-        <CardFooter>
-          <Button 
-            type="submit" 
-            disabled={loading || uploading} 
-            className="w-full"
-          >
-            {loading ? (
-              <>
-                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                Submitting...
-              </>
-            ) : (
-              "Submit Report"
-            )}
-          </Button>
-        </CardFooter>
-      </form>
+            
+            {/* Image Upload */}
+            <div className="border rounded-md p-4 space-y-3">
+              <Label htmlFor="image">Image Upload (Optional)</Label>
+              <Input
+                id="image"
+                type="file"
+                accept="image/*"
+                onChange={(e) => {
+                  if (e.target.files && e.target.files.length > 0) {
+                    setFile(e.target.files[0]);
+                  } else {
+                    setFile(null);
+                  }
+                }}
+                className="bg-background"
+              />
+              {file && (
+                <div className="mt-2 text-sm text-muted-foreground">
+                  <p>Selected File: {file.name}</p>
+                </div>
+              )}
+            </div>
+            
+            <Button type="submit" disabled={isLoading} className="w-full">
+              {isLoading ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Submitting Report...
+                </>
+              ) : (
+                "Submit Report"
+              )}
+            </Button>
+          </form>
+        </Form>
+      </CardContent>
     </Card>
   );
 }
